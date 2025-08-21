@@ -51,7 +51,7 @@ def insert_holding_to_db(row: dict):
         st.warning("DB not configured. Entry saved only in session.")
         return None
     resp = supabase.table("holdings").insert(row).execute()
-        return resp.data  # will be [] if nothing inserted
+    return resp.data  # will be [] if nothing inserted
 
 # --- UI ---
 st.title("📊 Personal Mutual Fund / SIP / ETF Tracker")
