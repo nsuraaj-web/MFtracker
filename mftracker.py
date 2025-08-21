@@ -115,12 +115,22 @@ def fetch_records_for_user(user_name: str) -> pd.DataFrame:
 # -------------------------
 if use_db:
     st.info("Syncing CSV to Supabase...")
+
     df_csv = fetch_all_records()
-    db_df = pd.DataFrame(supabase.table(TABLE_NAME).select("*").execute().data or [])
+    db_resp = supabase.table(TABLE_NAME).select("*").execute()
+    db_df = pd.DataFrame(db_resp.data or [])
+
+    # Ensure 'id' column exists in both
+    if "id" not in df_csv.columns:
+        df_csv["id"] = [str(uuid.uuid4()) for _ in range(len(df_csv))]
+    if "id" not in db_df.columns:
+        db_df["id"] = [str(uuid.uuid4()) for _ in range(len(db_df))]
+
     # push CSV-only records
-    csv_only = df_csv[~df_csv["id"].isin(db_df.get("id", []))]
+    csv_only = df_csv[~df_csv["id"].isin(db_df["id"])]
     for _, r in csv_only.iterrows():
         supabase.table(TABLE_NAME).insert(r.to_dict()).execute()
+
     # update CSV with full DB records
     df_combined = pd.concat([db_df, csv_only], ignore_index=True)
     save_csv(df_combined)
