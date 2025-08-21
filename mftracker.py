@@ -17,10 +17,18 @@ if SUPABASE_URL and SUPABASE_KEY:
 # -----------------------------
 @st.cache_data
 def load_amfi_data():
-    # Download latest file from https://www.amfiindia.com/spages/NAVAll.txt
-    # Assume pre-converted CSV stored in app repo as "amfi_schemes.csv"
-    df = pd.read_csv("amfi_schemes.csv")
-    df = df.dropna(subset=["Scheme Name"])
+    # Try correct delimiter & encoding
+    df = pd.read_csv(
+        "amfi_schemes.csv",
+        sep=';',              # AMFI uses semicolon
+        encoding='utf-8',     # sometimes 'utf-16' if utf-8 fails
+        skiprows=0,           # adjust if metadata rows exist
+        on_bad_lines='skip'   # skip malformed lines
+    )
+
+    # Optional: Rename columns if needed
+    df.columns = df.columns.str.strip()
+
     return df
 
 amfi_df = load_amfi_data()
