@@ -133,4 +133,41 @@ with st.form("entry_form"):
 if use_db:
     df = fetch_holdings_from_db()
 else:
-    if "holdings" not in st
+    if "holdings" not in st.session_state:
+        st.session_state["holdings"] = []
+    df = pd.DataFrame(st.session_state["holdings"])
+
+# Show table with current value
+if not df.empty:
+    st.subheader("📑 Your Holdings")
+
+    df["latest_nav"] = df["scheme_code"].apply(fetch_latest_nav)
+    df["current_value"] = df["latest_nav"] * df["units"]
+
+    df["absolute_return"] = ((df["current_value"] - df["amount"]) / df["amount"]) * 100
+
+    st.dataframe(df[[
+        "scheme_name", "purchase_date", "units", "purchase_nav", "latest_nav",
+        "amount", "current_value", "absolute_return"
+    ]], use_container_width=True)
+
+    # Summary Stats
+    st.subheader("📈 Portfolio Summary")
+    st.metric("Total Investment", f"₹{df['amount'].sum():,.0f}")
+    st.metric("Current Value", f"₹{df['current_value'].sum():,.0f}")
+    st.metric("Total Gain", f"₹{df['current_value'].sum() - df['amount'].sum():,.0f}")
+
+    # Top Performer
+    top = df.sort_values("absolute_return", ascending=False).head(1)
+    st.success(f"🏆 Top Performer: {top.iloc[0]['scheme_name']} ({top.iloc[0]['absolute_return']:.2f}%)")
+
+    # Peer comparison (Optional Captnemo)
+    st.subheader("🔍 Peer Comparison")
+    if scheme_code:
+        extra = fetch_captnemo_data(scheme_code)
+        if extra:
+            st.json(extra)
+        else:
+            st.info("Captnemo API not available, only NAV shown.")
+else:
+    st.info("No holdings yet. Add using the form above.")
