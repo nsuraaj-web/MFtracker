@@ -38,9 +38,6 @@ def fetch_holdings_from_db():
     rows = resp.data  # the new client puts rows directly in .data
     if not rows:
         return pd.DataFrame()
-
-    if not rows:
-        return pd.DataFrame()
     df = pd.DataFrame(rows)
     # convert types
     df['purchase_date'] = pd.to_datetime(df['purchase_date']).dt.date
