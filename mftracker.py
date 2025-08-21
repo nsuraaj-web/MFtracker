@@ -1,173 +1,138 @@
 import streamlit as st
 import pandas as pd
-import requests
 import datetime
 from supabase import create_client, Client
 
-# -------------------------
-# CONFIG
-# -------------------------
-st.set_page_config(page_title="MF & ETF Tracker", layout="wide")
+# -----------------------------
+# 1. Supabase Config
+# -----------------------------
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", None)
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", None)
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Supabase connection (Optional DB persistence)
-use_db = False
-try:
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["key"]
-    supabase: Client = create_client(url, key)
-    use_db = True
-except Exception:
-    st.warning("Supabase not configured. Data will only persist in session.")
-
-# -------------------------
-# Utility Functions
-# -------------------------
-
-@st.cache_data(ttl=86400)  # cache for 1 day
-def fetch_mf_list():
-    """Fetch all MF schemes from AMFI India."""
-    url = "https://www.amfiindia.com/spages/NAVAll.txt"
-    resp = requests.get(url)
-    lines = resp.text.splitlines()
-    funds = []
-    for line in lines:
-        parts = line.split(";")
-        if len(parts) >= 6 and parts[0].isdigit():
-            funds.append({"scheme_code": parts[0], "scheme_name": parts[3]})
-    return pd.DataFrame(funds)
-
-def fetch_latest_nav(scheme_code):
-    """Fetch latest NAV for a given MF code from AMFI."""
-    url = f"https://api.mfapi.in/mf/{scheme_code}"
-    resp = requests.get(url)
-    if resp.status_code == 200:
-        data = resp.json()
-        if "data" in data and len(data["data"]) > 0:
-            return float(data["data"][0]["nav"])
-    return None
-
-def fetch_captnemo_data(scheme_code):
-    """Optional: fetch extra performance data via captnemo API."""
-    try:
-        url = f"https://api.mfapi.in/mf/{scheme_code}"
-        resp = requests.get(url)
-        if resp.status_code == 200:
-            data = resp.json()
-            meta = data.get("meta", {})
-            return {
-                "fund_house": meta.get("fund_house"),
-                "scheme_category": meta.get("scheme_category"),
-                "scheme_type": meta.get("scheme_type"),
-            }
-    except Exception:
-        return {}
-    return {}
-
-# -------------------------
-# DB Operations
-# -------------------------
-
-def insert_holding_to_db(row: dict):
-    if not use_db:
-        return None
-    resp = supabase.table("holdings").insert(row).execute()
-    return resp.data
-
-def fetch_holdings_from_db():
-    if not use_db:
-        return pd.DataFrame()
-    resp = supabase.table("holdings").select("*").execute()
-    rows = resp.data
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df['purchase_date'] = pd.to_datetime(df['purchase_date']).dt.date
-    df['purchase_nav'] = pd.to_numeric(df['purchase_nav'])
-    df['units'] = pd.to_numeric(df['units'])
-    df['amount'] = pd.to_numeric(df['amount'])
+# -----------------------------
+# 2. Load AMFI data (local CSV)
+# -----------------------------
+@st.cache_data
+def load_amfi_data():
+    # Download latest file from https://www.amfiindia.com/spages/NAVAll.txt
+    # Assume pre-converted CSV stored in app repo as "amfi_schemes.csv"
+    df = pd.read_csv("amfi_schemes.csv")
+    df = df.dropna(subset=["Scheme Name"])
     return df
 
-# -------------------------
-# MAIN APP
-# -------------------------
-st.title("📊 Mutual Fund / ETF / SIP / NPS Tracker")
+amfi_df = load_amfi_data()
+scheme_names = amfi_df["Scheme Name"].unique().tolist()
 
-mf_list = fetch_mf_list()
+# -----------------------------
+# 3. Supabase helpers
+# -----------------------------
+def fetch_holdings(user_name: str):
+    if not supabase:
+        return pd.DataFrame([])
+    resp = supabase.table("holdings").select("*").eq("user_name", user_name).execute()
+    return pd.DataFrame(resp.data) if resp.data else pd.DataFrame([])
 
-with st.form("entry_form"):
-    user_name = st.text_input("User Name", "Suraaj")
+def insert_holding(row: dict):
+    if not supabase:
+        st.warning("Supabase not configured. Data will only persist in session.")
+        return
+    supabase.table("holdings").insert(row).execute()
 
-    # Autocomplete Fund Selection
-    mf_name = st.selectbox(
-        "Mutual Fund Scheme",
-        options=mf_list["scheme_name"].unique(),
-        index=None,
-        placeholder="Search & select fund..."
-    )
+def delete_holding(row_id: str):
+    if supabase:
+        supabase.table("holdings").delete().eq("id", row_id).execute()
 
-    scheme_code = None
-    if mf_name:
-        scheme_code = mf_list.loc[mf_list["scheme_name"] == mf_name, "scheme_code"].iloc[0]
+# -----------------------------
+# 4. Utility: CAGR
+# -----------------------------
+def calculate_cagr(start_value, end_value, years):
+    if start_value <= 0 or years <= 0:
+        return 0
+    return ((end_value / start_value) ** (1 / years) - 1) * 100
 
+# -----------------------------
+# 5. Streamlit UI
+# -----------------------------
+st.title("📊 Mutual Fund Tracker")
+
+user_name = st.text_input("Enter your name:", value="Guest")
+
+# -------- Add Holding --------
+st.header("➕ Add New Holding")
+with st.form("add_form"):
+    instrument_name = st.selectbox("Mutual Fund Scheme", scheme_names)
+    instrument_type = st.selectbox("Type", ["MF", "SIP", "ETF", "NPS", "Other"])
     purchase_date = st.date_input("Purchase Date", datetime.date.today())
-    purchase_nav = st.number_input("Purchase NAV", min_value=0.0, step=0.01)
-    units = st.number_input("Units", min_value=0.0, step=0.01)
-    amount = purchase_nav * units
-
+    amount = st.number_input("Investment Amount (₹)", min_value=100.0, step=100.0)
+    
+    # Lookup NAV from AMFI for default
+    nav_row = amfi_df[amfi_df["Scheme Name"] == instrument_name].head(1)
+    purchase_nav = float(nav_row["Net Asset Value"].values[0]) if not nav_row.empty else 10.0
+    st.write(f"📌 Auto-filled NAV: {purchase_nav}")
+    
+    units = amount / purchase_nav
+    notes = st.text_area("Notes", "")
+    
     submitted = st.form_submit_button("Add Holding")
-
-    if submitted and mf_name and scheme_code:
+    if submitted:
         row = {
             "user_name": user_name,
-            "scheme_code": scheme_code,
-            "scheme_name": mf_name,
+            "instrument_name": instrument_name,
+            "instrument_type": instrument_type,
             "purchase_date": str(purchase_date),
-            "purchase_nav": float(purchase_nav),
-            "units": float(units),
-            "amount": float(amount),
+            "purchase_nav": purchase_nav,
+            "units": units,
+            "amount": amount,
+            "category": nav_row["Scheme Category"].values[0] if not nav_row.empty else "Unknown",
+            "crisil_rating": None,
+            "notes": notes,
         }
-        insert_holding_to_db(row)
-        st.success(f"Added {mf_name} to holdings.")
+        insert_holding(row)
+        st.success("✅ Holding added!")
 
-# Load holdings
-if use_db:
-    df = fetch_holdings_from_db()
+# -------- Portfolio --------
+st.header("📂 My Portfolio")
+df = fetch_holdings(user_name)
+if df.empty:
+    st.info("No holdings yet.")
 else:
-    if "holdings" not in st.session_state:
-        st.session_state["holdings"] = []
-    df = pd.DataFrame(st.session_state["holdings"])
+    # Merge with AMFI NAVs
+    merged = df.merge(amfi_df, left_on="instrument_name", right_on="Scheme Name", how="left")
+    merged["Current NAV"] = merged["Net Asset Value"].astype(float)
+    merged["Current Value"] = merged["Current NAV"] * merged["units"].astype(float)
+    merged["Gain/Loss"] = merged["Current Value"] - merged["amount"].astype(float)
+    merged["Years"] = (
+        (pd.to_datetime("today") - pd.to_datetime(merged["purchase_date"])).dt.days / 365
+    )
+    merged["CAGR %"] = merged.apply(
+        lambda x: calculate_cagr(x["amount"], x["Current Value"], x["Years"]), axis=1
+    )
+    
+    st.dataframe(
+        merged[[
+            "instrument_name", "category", "purchase_date", "amount", 
+            "purchase_nav", "units", "Current NAV", "Current Value", 
+            "Gain/Loss", "CAGR %"
+        ]]
+    )
+    
+    total_invested = merged["amount"].sum()
+    total_value = merged["Current Value"].sum()
+    st.metric("💰 Total Invested", f"₹{total_invested:,.0f}")
+    st.metric("📈 Current Value", f"₹{total_value:,.0f}")
+    st.metric("🔄 Overall Gain/Loss", f"₹{(total_value-total_invested):,.0f}")
 
-# Show table with current value
+# -------- Peer Comparison --------
+st.header("📊 Peer Comparison")
 if not df.empty:
-    st.subheader("📑 Your Holdings")
-
-    df["latest_nav"] = df["scheme_code"].apply(fetch_latest_nav)
-    df["current_value"] = df["latest_nav"] * df["units"]
-
-    df["absolute_return"] = ((df["current_value"] - df["amount"]) / df["amount"]) * 100
-
-    st.dataframe(df[[
-        "scheme_name", "purchase_date", "units", "purchase_nav", "latest_nav",
-        "amount", "current_value", "absolute_return"
-    ]], use_container_width=True)
-
-    # Summary Stats
-    st.subheader("📈 Portfolio Summary")
-    st.metric("Total Investment", f"₹{df['amount'].sum():,.0f}")
-    st.metric("Current Value", f"₹{df['current_value'].sum():,.0f}")
-    st.metric("Total Gain", f"₹{df['current_value'].sum() - df['amount'].sum():,.0f}")
-
-    # Top Performer
-    top = df.sort_values("absolute_return", ascending=False).head(1)
-    st.success(f"🏆 Top Performer: {top.iloc[0]['scheme_name']} ({top.iloc[0]['absolute_return']:.2f}%)")
-
-    # Peer comparison (Optional Captnemo)
-    st.subheader("🔍 Peer Comparison")
-    if scheme_code:
-        extra = fetch_captnemo_data(scheme_code)
-        if extra:
-            st.json(extra)
-        else:
-            st.info("Captnemo API not available, only NAV shown.")
-else:
-    st.info("No holdings yet. Add using the form above.")
+    selected_fund = st.selectbox("Select Fund for Peer Comparison", df["instrument_name"].unique())
+    fund_category = (
+        amfi_df.loc[amfi_df["Scheme Name"] == selected_fund, "Scheme Category"].values[0]
+    )
+    st.write(f"Comparing **{selected_fund}** with peers in **{fund_category}**")
+    
+    peer_df = amfi_df[amfi_df["Scheme Category"] == fund_category]
+    st.dataframe(peer_df[["Scheme Name", "Net Asset Value"]].sort_values("Net Asset Value", ascending=False).head(10))
