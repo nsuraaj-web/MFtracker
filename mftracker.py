@@ -33,16 +33,24 @@ else:
 LOCAL_CSV = "holdings.csv"
 
 def fetch_all_records() -> pd.DataFrame:
+    cols = ["id","user_name","scheme_code","mf_name","purchase_date",
+            "purchase_nav","units","amount","current_nav","profit_loss","notes","created_at"]
     if use_db:
         resp = supabase.table(TABLE_NAME).select("*").execute()
         data = resp.data or []
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        for c in cols:
+            if c not in df.columns:
+                df[c] = None
+        return df[cols]
     else:
         try:
-            return pd.read_csv(LOCAL_CSV)
+            df = pd.read_csv(LOCAL_CSV)
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = None
+            return df[cols]
         except FileNotFoundError:
-            cols = ["id","user_name","scheme_code","mf_name","purchase_date",
-                    "purchase_nav","units","amount","current_nav","profit_loss","notes","created_at"]
             return pd.DataFrame(columns=cols)
 
 def save_csv(df: pd.DataFrame):
