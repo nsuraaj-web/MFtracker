@@ -34,11 +34,11 @@ def cagr(start_value, end_value, years):
 def fetch_holdings_from_db():
     if not use_db:
         return pd.DataFrame()
-    resp = supabase.table("holdings").select("*").execute()
-    if resp.error:
-        st.error("Error reading DB: " + str(resp.error))
-        return pd.DataFrame()
-    rows = resp.data
+resp = supabase.table("holdings").select("*").execute()
+rows = resp.data  # the new client puts rows directly in .data
+if not rows:
+    return pd.DataFrame()
+
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -53,11 +53,8 @@ def insert_holding_to_db(row: dict):
     if not use_db:
         st.warning("DB not configured. Entry saved only in session.")
         return None
-    resp = supabase.table("holdings").insert(row).execute()
-    if resp.error:
-        st.error("Insert error: " + str(resp.error))
-        return None
-    return resp.data
+resp = supabase.table("holdings").insert(row).execute()
+return resp.data  # will be [] if nothing inserted
 
 # --- UI ---
 st.title("📊 Personal Mutual Fund / SIP / ETF Tracker")
